@@ -11,6 +11,8 @@ import queue
 
 import deepl
 
+import subprocess
+
 
 # --- Configuration ---
 ASSEMBLY_AI_API_KEY = os.environ["ASSEMBLY_AI_API_KEY"]
@@ -45,6 +47,7 @@ stop_event = threading.Event()  # To signal the audio thread to stop
 
 # thread safe queue.
 transcript_queue = queue.Queue()
+speech_queue = queue.Queue()
 
 def transcript_processor():
     """
@@ -55,20 +58,35 @@ def transcript_processor():
         try:
             # timeout=1 allows us to check stop_event regularly
             transcript = transcript_queue.get(timeout=1)
+            print(f"\n[Processor Output]: {transcript}")
+
 
             translated = deepl_client.translate_text(transcript, target_lang="DE", source_lang="EN").text
             print(f"German: {translated}")
         
-            #speech_queue.put(translated)
-                        
-            print(f"\n[Processor Output]: {transcript}")
-
-            
-            
+            speech_queue.put(translated)     
             transcript_queue.task_done()
         except queue.Empty:
             continue
     print("[Processor] Thread shutting down.")
+
+def speech_processor():
+    """
+    This runs in its own thread, waiting for items to appear in the queue.
+    """
+    print("[Speech Processor] Thread started and waiting for transcripts...")
+    while not stop_event.is_set():
+        try:
+            # timeout=1 allows us to check stop_event regularly
+            text = speech_queue.get()
+            subprocess.run(["piper", "--model", "/home/swh/piper-voices/de_DE-thorsten-medium.onnx", "--output_file", "/tmp/out.wav"], input=text, text=True)# this would most likely be better if we would load this in RAM once instead of loading from disk every time
+            #mqtt_client.publish("mask/mouth", "ON")
+            subprocess.run(["aplay", "-D", "plughw:2,0", "/tmp/out.wav"])
+            #mqtt_client.publish("mask/mouth", "OFF")
+        except queue.Empty:
+            continue
+    print("[Speech Processor] Thread shutting down.")
+
 
 # WAV recording variables
 recorded_frames = []  # Store audio frames for WAV file
@@ -233,6 +251,10 @@ def run():
     # Starting the translation thread
     processor_thread = threading.Thread(target=transcript_processor, daemon=True)
     processor_thread.start()
+
+    # Starting the speech thread
+    speech_thread = threading.Thread(target=speech_processor, daemon=True)
+    speech_thread.start()
 
     # Run WebSocketApp in a separate thread to allow main thread to catch KeyboardInterrupt
     ws_thread = threading.Thread(target=ws_app.run_forever)
