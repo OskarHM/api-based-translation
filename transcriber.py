@@ -7,6 +7,7 @@ import wave
 from urllib.parse import urlencode
 from datetime import datetime
 import os
+import queue
 
 # --- Configuration ---
 YOUR_API_KEY = os.environ["ASSEMBLY_AI_API_KEY"]
@@ -34,6 +35,28 @@ stream = None
 ws_app = None
 audio_thread = None
 stop_event = threading.Event()  # To signal the audio thread to stop
+
+# thread safe queue.
+transcript_queue = queue.Queue()
+
+def transcript_processor():
+    """
+    This runs in its own thread, waiting for items to appear in the queue.
+    """
+    print("[Processor] Thread started and waiting for transcripts...")
+    while not stop_event.is_set():
+        try:
+            # timeout=1 allows us to check stop_event regularly
+            transcript = transcript_queue.get(timeout=1)
+                        
+            print(f"\n[Processor Output]: {transcript}")
+            
+            
+            
+            transcript_queue.task_done()
+        except queue.Empty:
+            continue
+    print("[Processor] Thread shutting down.")
 
 # WAV recording variables
 recorded_frames = []  # Store audio frames for WAV file
@@ -116,6 +139,8 @@ def on_message(ws, message):
             if formatted:
                 print('\r' + ' ' * 80 + '\r', end='')
                 print(transcript)
+                transcript_queue.put(transcript)
+                # here we now shoould add the transcipt to the queue.
                 #print("This is the whole sentence." + transcript)
             #else:
                 #print(f"\r{transcript}", end='')
@@ -193,6 +218,9 @@ def run():
         on_error=on_error,
         on_close=on_close,
     )
+    # Starting the translation thread
+    processor_thread = threading.Thread(target=transcript_processor, daemon=True)
+    processor_thread.start()
 
     # Run WebSocketApp in a separate thread to allow main thread to catch KeyboardInterrupt
     ws_thread = threading.Thread(target=ws_app.run_forever)
