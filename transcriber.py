@@ -12,9 +12,13 @@ import os
 YOUR_API_KEY = os.environ["ASSEMBLY_AI_API_KEY"]
 
 CONNECTION_PARAMS = {
-    "speech_model": "universal-streaming-english",
+    "speech_model": "universal-streaming-english", # fastest model for streaming
     "sample_rate": 48000,
+    "disable_partial_transcripts": "true", # this is somehow not really working
+    "format_turns": "true", ## this ensures that we can dissect sentences
 }
+# 
+
 API_ENDPOINT_BASE_URL = "wss://streaming.assemblyai.com/v3/ws"
 API_ENDPOINT = f"{API_ENDPOINT_BASE_URL}?{urlencode(CONNECTION_PARAMS)}"
 
@@ -112,8 +116,10 @@ def on_message(ws, message):
             if formatted:
                 print('\r' + ' ' * 80 + '\r', end='')
                 print(transcript)
-            else:
-                print(f"\r{transcript}", end='')
+                #print("This is the whole sentence." + transcript)
+            #else:
+                #print(f"\r{transcript}", end='')
+                # this here would be the partial transcripts that I can somehow not ignore
         elif msg_type == "Termination":
             audio_duration = data.get('audio_duration_seconds', 0)
             session_duration = data.get('session_duration_seconds', 0)
