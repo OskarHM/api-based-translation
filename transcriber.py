@@ -9,8 +9,15 @@ from datetime import datetime
 import os
 import queue
 
+import deepl
+
+
 # --- Configuration ---
-YOUR_API_KEY = os.environ["ASSEMBLY_AI_API_KEY"]
+ASSEMBLY_AI_API_KEY = os.environ["ASSEMBLY_AI_API_KEY"]
+
+# Deep L configuration
+DEEPL_API_KEY = os.environ["DEEPL_API_KEY"]
+deepl_client = deepl.DeepLClient(DEEPL_API_KEY)
 
 CONNECTION_PARAMS = {
     "speech_model": "universal-streaming-english", # fastest model for streaming
@@ -48,9 +55,14 @@ def transcript_processor():
         try:
             # timeout=1 allows us to check stop_event regularly
             transcript = transcript_queue.get(timeout=1)
+
+            translated = deepl_client.translate_text(transcript, target_lang="DE", source_lang="EN").text
+            print(f"German: {translated}")
+        
+            #speech_queue.put(translated)
                         
             print(f"\n[Processor Output]: {transcript}")
-            
+
             
             
             transcript_queue.task_done()
@@ -212,7 +224,7 @@ def run():
     # Create WebSocketApp
     ws_app = websocket.WebSocketApp(
         API_ENDPOINT,
-        header={"Authorization": YOUR_API_KEY},
+        header={"Authorization": ASSEMBLY_AI_API_KEY},
         on_open=on_open,
         on_message=on_message,
         on_error=on_error,
