@@ -8,9 +8,11 @@ from urllib.parse import urlencode
 from datetime import datetime
 import os
 import queue
-
+import tempfile
+import io
+import time
+from piper.voice import PiperVoice
 import deepl
-
 import subprocess
 
 
@@ -70,63 +72,54 @@ def transcript_processor():
             continue
     print("[Processor] Thread shutting down.")
 
-def speech_processor():
-    """
-    This runs in its own thread, waiting for items to appear in the queue.
-    """
-    print("[Speech Processor] Thread started and waiting for transcripts...")
 
-    PIPER_PATH = "/home/swh/api_based_transcription/venv/bin/piper"   # change if needed
+
+def speech_processor():
+    print("[Speech Processor] Thread started and loading Piper voice...")
+
     MODEL_PATH = "/home/swh/piper-voices/de_DE-thorsten-low.onnx"
     AUDIO_DEVICE = "plughw:CARD=AUDIO,DEV=0"
-    SAMPLE_RATE_TTS = "22050"   # likely correct for this Piper voice
+
+    try:
+        t0 = time.time()
+        voice = PiperVoice.load(MODEL_PATH)
+        print(f"[Speech Processor] Piper voice loaded in {time.time() - t0:.3f}s")
+    except Exception as e:
+        print(f"[Speech Processor] Failed to load Piper voice: {e}")
+        return
 
     while not stop_event.is_set():
         try:
             text = speech_queue.get(timeout=1)
-
             print(f"[Speech Processor] Speaking: {text}")
 
-            piper_proc = subprocess.Popen(
-                [
-                    PIPER_PATH,
-                    "--model", MODEL_PATH,
-                    "--output-raw"
-                ],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
+            t0 = time.time()
 
-            aplay_proc = subprocess.Popen(
-                [
-                    "aplay",
-                    "-D", AUDIO_DEVICE,
-                    "-r", SAMPLE_RATE_TTS,
-                    "-f", "S16_LE",
-                    "-t", "raw",
-                    "-"
-                ],
-                stdin=piper_proc.stdout,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE
-            )
+            # synthesize once into memory
+            wav_buffer = io.BytesIO()
+            with wave.open(wav_buffer, "wb") as wav_file:
+                voice.synthesize(text, wav_file)
 
-            # Let aplay consume Piper stdout
-            piper_proc.stdout.close()
+            t1 = time.time()
 
-            # Feed the text into Piper
-            _, piper_err = piper_proc.communicate(input=text)
+            # play via a temporary wav file
+            # not ideal, but still much better than reloading Piper every time
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as f:
+                f.write(wav_buffer.getvalue())
+                f.flush()
 
-            # Wait until playback is done
-            _, aplay_err = aplay_proc.communicate()
+                subprocess.run(
+                    ["aplay", "-D", AUDIO_DEVICE, f.name],
+                    check=True,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
 
-            if piper_proc.returncode != 0:
-                print(f"[Speech Processor] Piper error: {piper_err}")
+            t2 = time.time()
 
-            if aplay_proc.returncode != 0:
-                print(f"[Speech Processor] aplay error: {aplay_err.decode(errors='ignore')}")
+            print(f"[Timing] synth: {t1 - t0:.3f}s")
+            print(f"[Timing] play:  {t2 - t1:.3f}s")
+            print(f"[Timing] total: {t2 - t0:.3f}s")
 
             speech_queue.task_done()
 
@@ -136,6 +129,7 @@ def speech_processor():
             print(f"[Speech Processor] Error: {e}")
 
     print("[Speech Processor] Thread shutting down.")
+
 
 
 # WAV recording variables
