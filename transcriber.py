@@ -60,7 +60,7 @@ audio_config = texttospeech.AudioConfig(
 
 # MQTT configuration
 mqtt_client = mqtt.Client()
-mqtt_client.connect('192.168.0.227')
+mqtt_client.connect('siemens-display-whisper-mask.local')
 
 # thread safe queues for communication between threads
 transcript_queue = queue.Queue()
