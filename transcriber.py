@@ -11,6 +11,7 @@ import queue
 import deepl
 import subprocess
 from google.cloud import texttospeech
+import paho.mqtt.client as mqtt
 
 
 
@@ -56,6 +57,11 @@ voice = texttospeech.VoiceSelectionParams(
 audio_config = texttospeech.AudioConfig(
     audio_encoding=texttospeech.AudioEncoding.LINEAR16
 )
+
+# MQTT configuration
+mqtt_client = mqtt.Client()
+mqtt_client.connect('192.168.0.227')
+
 # thread safe queues for communication between threads
 transcript_queue = queue.Queue()
 text_to_speech_queue = queue.Queue()
@@ -114,8 +120,9 @@ def play_audio():
             print(f"[Player] Playing audio")
             with open("output.wav", "wb") as out:
                 out.write(audio_content)
-        
+            mqtt_client.publish('mask/mouth', 'ON')
             subprocess.run(["aplay", "-D", "plughw:2,0", "output.wav"])
+            mqtt_client.publish('mask/mouth', 'OFF')
             print(f"[Player] Playback finished")
             speak_queue.task_done()
         except queue.Empty:
