@@ -8,13 +8,13 @@ from urllib.parse import urlencode
 from datetime import datetime
 import os
 import queue
-
 import deepl
-
 import subprocess
+from google.cloud import texttospeech
 
 
-# --- Configuration ---
+
+# Assembly AI configuration
 ASSEMBLY_AI_API_KEY = os.environ["ASSEMBLY_AI_API_KEY"]
 
 # Deep L configuration
@@ -27,7 +27,6 @@ CONNECTION_PARAMS = {
     "disable_partial_transcripts": "true", # this is somehow not really working
     "format_turns": "true", ## this ensures that we can dissect sentences
 }
-# 
 
 API_ENDPOINT_BASE_URL = "wss://streaming.assemblyai.com/v3/ws"
 API_ENDPOINT = f"{API_ENDPOINT_BASE_URL}?{urlencode(CONNECTION_PARAMS)}"
@@ -45,9 +44,22 @@ ws_app = None
 audio_thread = None
 stop_event = threading.Event()  # To signal the audio thread to stop
 
-# thread safe queue.
+
+# Google Text-to-Speech configuration
+# Instantiates a client
+client = texttospeech.TextToSpeechClient()
+
+voice = texttospeech.VoiceSelectionParams(
+    language_code="de-DE", ssml_gender=texttospeech.SsmlVoiceGender.NEUTRAL
+)
+# Select the type of audio file we want (Linear16 is WAV encoding)
+audio_config = texttospeech.AudioConfig(
+    audio_encoding=texttospeech.AudioEncoding.LINEAR16
+)
+# thread safe queues for communication between threads
 transcript_queue = queue.Queue()
-speech_queue = queue.Queue()
+text_to_speech_queue = queue.Queue()
+speak_queue = queue.Queue()
 
 def transcript_processor():
     """
@@ -64,7 +76,7 @@ def transcript_processor():
             translated = deepl_client.translate_text(transcript, target_lang="DE", source_lang="EN").text
             print(f"German: {translated}")
         
-            speech_queue.put(translated)     
+            text_to_speech_queue.put(translated)     
             transcript_queue.task_done()
         except queue.Empty:
             continue
@@ -75,60 +87,19 @@ def speech_processor():
     This runs in its own thread, waiting for items to appear in the queue.
     """
     print("[Speech Processor] Thread started and waiting for transcripts...")
-
-    PIPER_PATH = "/home/swh/api_based_transcription/venv/bin/piper"   # change if needed
-    MODEL_PATH = "/home/swh/piper-voices/de_DE-thorsten-low.onnx"
-    AUDIO_DEVICE = "plughw:CARD=AUDIO,DEV=0"
-    SAMPLE_RATE_TTS = "22050"   # likely correct for this Piper voice
-
-    while not stop_event.is_set():
-        try:
-            text = speech_queue.get(timeout=1)
-
-            print(f"[Speech Processor] Speaking: {text}")
-
-            piper_proc = subprocess.Popen(
-                [
-                    PIPER_PATH,
-                    "--model", MODEL_PATH,
-                    "--output-raw"
-                ],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True
-            )
-
-            aplay_proc = subprocess.Popen(
-                [
-                    "aplay",
-                    "-D", AUDIO_DEVICE,
-                    "-r", SAMPLE_RATE_TTS,
-                    "-f", "S16_LE",
-                    "-t", "raw",
-                    "-"
-                ],
-                stdin=piper_proc.stdout,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE
-            )
-
-            # Let aplay consume Piper stdout
-            piper_proc.stdout.close()
-
-            # Feed the text into Piper
-            _, piper_err = piper_proc.communicate(input=text)
-
-            # Wait until playback is done
-            _, aplay_err = aplay_proc.communicate()
-
-            if piper_proc.returncode != 0:
-                print(f"[Speech Processor] Piper error: {piper_err}")
-
-            if aplay_proc.returncode != 0:
-                print(f"[Speech Processor] aplay error: {aplay_err.decode(errors='ignore')}")
-
-            speech_queue.task_done()
+    while True:
+        text = text_to_speech_queue.get()
+        if text is None:  #alternative end signal not yet used might change to this if not remove
+            speak_queue.put(None)
+            break
+        
+        print(f"[Synthesizer] Processing: {text}")
+        synthesis_input = texttospeech.SynthesisInput(text=text)
+        response = client.synthesize_speech(
+            input=synthesis_input, voice=voice, audio_config=audio_config
+        )
+        print(f"[Synthesizer] Audio synthesized, adding to speak queue")
+        speak_queue.put(response.audio_content)
 
         except queue.Empty:
             continue
@@ -137,6 +108,19 @@ def speech_processor():
 
     print("[Speech Processor] Thread shutting down.")
 
+def play_audio():
+    """Thread 3: Reads audio from speak_queue and plays it"""
+    while True:
+        audio_content = speak_queue.get()
+        if audio_content is None:  # End signal
+            break
+        
+        print(f"[Player] Playing audio")
+        with open("output.wav", "wb") as out:
+            out.write(audio_content)
+        
+        subprocess.run(["aplay", "-D", "plughw:2,0", "output.wav"])
+        print(f"[Player] Playback finished")
 
 # WAV recording variables
 recorded_frames = []  # Store audio frames for WAV file
@@ -298,14 +282,15 @@ def run():
         on_error=on_error,
         on_close=on_close,
     )
-    # Starting the translation thread
+    # Starting the transc thread
     processor_thread = threading.Thread(target=transcript_processor, daemon=True)
     processor_thread.start()
-
     # Starting the speech thread
     speech_thread = threading.Thread(target=speech_processor, daemon=True)
     speech_thread.start()
-
+    # Starting the audio thread
+    audio_play_thread = threading.Thread(target=play_audio, daemon=True)
+    audio_play_thread.start()
     # Run WebSocketApp in a separate thread to allow main thread to catch KeyboardInterrupt
     ws_thread = threading.Thread(target=ws_app.run_forever)
     ws_thread.daemon = True
