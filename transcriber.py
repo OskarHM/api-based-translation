@@ -87,19 +87,17 @@ def speech_processor():
     This runs in its own thread, waiting for items to appear in the queue.
     """
     print("[Speech Processor] Thread started and waiting for transcripts...")
-    while True:
-        text = text_to_speech_queue.get()
-        if text is None:  #alternative end signal not yet used might change to this if not remove
-            speak_queue.put(None)
-            break
-        
-        print(f"[Synthesizer] Processing: {text}")
-        synthesis_input = texttospeech.SynthesisInput(text=text)
-        response = client.synthesize_speech(
+    while not stop_event.is_set():
+        try:
+            text = text_to_speech_queue.get(timeout=1)
+            print(f"[Synthesizer] Processing: {text}")
+            synthesis_input = texttospeech.SynthesisInput(text=text)
+            response = client.synthesize_speech(
             input=synthesis_input, voice=voice, audio_config=audio_config
-        )
-        print(f"[Synthesizer] Audio synthesized, adding to speak queue")
-        speak_queue.put(response.audio_content)
+            )
+            print(f"[Synthesizer] Audio synthesized, adding to speak queue")
+            speak_queue.put(response.audio_content)
+            text_to_speech_queue.task_done()
 
         except queue.Empty:
             continue
@@ -110,17 +108,18 @@ def speech_processor():
 
 def play_audio():
     """Thread 3: Reads audio from speak_queue and plays it"""
-    while True:
-        audio_content = speak_queue.get()
-        if audio_content is None:  # End signal
-            break
+    while not stop_event.is_set():
+        try:
+            audio_content = speak_queue.get(timeout=1)
+            print(f"[Player] Playing audio")
+            with open("output.wav", "wb") as out:
+                out.write(audio_content)
         
-        print(f"[Player] Playing audio")
-        with open("output.wav", "wb") as out:
-            out.write(audio_content)
-        
-        subprocess.run(["aplay", "-D", "plughw:2,0", "output.wav"])
-        print(f"[Player] Playback finished")
+            subprocess.run(["aplay", "-D", "plughw:2,0", "output.wav"])
+            print(f"[Player] Playback finished")
+            speak_queue.task_done()
+        except queue.Empty:
+            continue    
 
 # WAV recording variables
 recorded_frames = []  # Store audio frames for WAV file
